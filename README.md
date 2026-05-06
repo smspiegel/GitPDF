@@ -1,4 +1,4 @@
-# gitpdf
+# GitPDF
 
 Local PDF comparison tool. Two PDFs in (text-embedded or scanned), side-by-side diff highlights out. Fully offline, permissive-licensed dependencies only.
 
