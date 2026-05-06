@@ -15,7 +15,15 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 $venvPython = ".\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
-    Write-Error "Expected venv at .\.venv -- create one first: python -m venv .venv"
+    Write-Host "==> Creating venv at .\.venv ..." -ForegroundColor Cyan
+    python -m venv .venv
+    if ($LASTEXITCODE -ne 0) {
+        throw "python -m venv failed -- ensure Python 3.10+ is installed and on PATH (https://www.python.org/downloads/)"
+    }
+    Write-Host "==> Installing project dependencies (this takes a minute) ..." -ForegroundColor Cyan
+    & $venvPython -m pip install --quiet --disable-pip-version-check --upgrade pip
+    & $venvPython -m pip install --disable-pip-version-check -e ".[dev]"
+    if ($LASTEXITCODE -ne 0) { throw "pip install -e .[dev] failed" }
 }
 
 Write-Host "==> Ensuring PyInstaller is installed..." -ForegroundColor Cyan
