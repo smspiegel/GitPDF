@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitpdf"
+version = "0.1.0"
+description = "Local PDF comparison tool"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Spencer" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "python-multipart>=0.0.9",
+    "pdfplumber>=0.11",
+    "pdfminer.six>=20231228",
+    "pypdfium2>=4.27",
+    "Pillow>=10.2",
+    "rapidfuzz>=3.6",
+    "diff-match-patch>=20230430",
+    "scipy>=1.12",
+    "numpy>=1.26",
+    "pytesseract>=0.3.10",
+]
+
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+ocr-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.6"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+gitpdf = "gitpdf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gitpdf = ["web/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

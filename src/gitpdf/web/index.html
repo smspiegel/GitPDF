@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>PDF Diff</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header id="toolbar">
+  <label class="file-btn">
+    Open Document A
+    <input type="file" id="file-a" accept="application/pdf" />
+  </label>
+  <label class="file-btn">
+    Open Document B
+    <input type="file" id="file-b" accept="application/pdf" />
+  </label>
+  <select id="mode">
+    <option value="auto" selected>Mode: Auto</option>
+    <option value="git-style">Git-style</option>
+    <option value="diff-only">Diff-only</option>
+  </select>
+  <button id="run">Compare</button>
+  <button id="prev" disabled title="Previous diff (Ctrl+Up)">&uarr;</button>
+  <button id="next" disabled title="Next diff (Ctrl+Down)">&darr;</button>
+  <span id="status"></span>
+  <button id="toggle-summary">Summary</button>
+  <label class="sync-toggle">
+    <input type="checkbox" id="sync-scroll" checked /> Sync scroll
+  </label>
+</header>
+
+<main>
+  <section class="pane" id="pane-a">
+    <header class="pane-title">
+      <span class="pane-label">Document A:</span>
+      <span class="pane-filename empty" id="filename-a">no file selected</span>
+    </header>
+    <div class="pages" id="pages-a"></div>
+  </section>
+  <section class="pane" id="pane-b">
+    <header class="pane-title">
+      <span class="pane-label">Document B:</span>
+      <span class="pane-filename empty" id="filename-b">no file selected</span>
+    </header>
+    <div class="pages" id="pages-b"></div>
+  </section>
+  <aside id="summary" hidden>
+    <h2>Changes</h2>
+    <ol id="summary-list"></ol>
+  </aside>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
