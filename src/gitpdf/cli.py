@@ -91,7 +91,7 @@ def _run_gui() -> int:
         thread.join(timeout=5)
         return 0
 
-    webview.create_window("PDF Diff", url, width=1400, height=900)
+    webview.create_window("GitPDF", url, width=1400, height=900)
     webview.start()
     server.should_exit = True
     thread.join(timeout=5)

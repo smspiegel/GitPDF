@@ -9,10 +9,8 @@ from __future__ import annotations
 import pytest
 
 from gitpdf.diff_engine import (
-    align_blocks,
     choose_mode,
     compute_diff,
-    detect_moves,
     score_similarity,
     segment_blocks,
 )
@@ -94,52 +92,6 @@ def test_choose_mode_threshold():
     assert choose_mode("auto", 0.69) == "diff-only"
     assert choose_mode("git-style", 0.0) == "git-style"
     assert choose_mode("diff-only", 1.0) == "diff-only"
-
-
-# ------ alignment ------
-
-def test_align_one_to_one():
-    a = segment_blocks(make_paragraph_tokens([["hello", "world"], ["foo", "bar"]]))
-    b = segment_blocks(make_paragraph_tokens([["foo", "bar"], ["hello", "world"]]))
-    pairs = align_blocks(a, b)
-    matched = [(p.a, p.b) for p in pairs if p.a is not None and p.b is not None]
-    # Each block should be paired exactly once.
-    assert len(matched) == 2
-    assert {p[0] for p in matched} == {0, 1}
-    assert {p[1] for p in matched} == {0, 1}
-
-
-def test_align_addition():
-    a = segment_blocks(make_paragraph_tokens([["hello", "world"]]))
-    b = segment_blocks(make_paragraph_tokens([["hello", "world"], ["new", "paragraph"]]))
-    pairs = align_blocks(a, b)
-    unmatched_b = [p for p in pairs if p.a is None and p.b is not None]
-    assert len(unmatched_b) == 1
-
-
-def test_align_removal():
-    a = segment_blocks(make_paragraph_tokens([["hello", "world"], ["gone", "now"]]))
-    b = segment_blocks(make_paragraph_tokens([["hello", "world"]]))
-    pairs = align_blocks(a, b)
-    unmatched_a = [p for p in pairs if p.a is not None and p.b is None]
-    assert len(unmatched_a) == 1
-
-
-# ------ move detection ------
-
-def test_detect_moves_swap():
-    # A: [b0=foo, b1=bar]; B: [b0=bar, b1=foo]
-    # Matched pairs: (0,1) and (1,0). LIS length = 1, so one of them is moved.
-    from gitpdf.diff_engine import Pair
-    pairs = [Pair(a=0, b=1, similarity=1.0), Pair(a=1, b=0, similarity=1.0)]
-    moved = detect_moves(pairs)
-    assert len(moved) == 1
-
-
-def test_detect_moves_no_move():
-    from gitpdf.diff_engine import Pair
-    pairs = [Pair(a=0, b=0, similarity=1.0), Pair(a=1, b=1, similarity=1.0)]
-    assert detect_moves(pairs) == set()
 
 
 # ------ end-to-end compute_diff ------
@@ -265,3 +217,137 @@ def test_compute_diff_resume_like_only_changed_lines_highlighted():
         o.kind.value for o in result.overlays if o.side == "B"
     )
     assert "added" in added_text
+
+
+# ------ similarity-cap regression ------
+
+
+def test_similarity_capped_when_overlays_present():
+    """Any overlay must prevent the reported similarity from rounding to 100%.
+
+    The UI displays similarity via `(value * 100).toFixed(0)`, so anything
+    >= 0.995 would round up to "100%" and lie to the user. Whenever
+    compute_diff produces at least one overlay we cap at 0.99.
+    """
+    # Single-word change in an otherwise long shared body: token_set_ratio
+    # comes back very high (often 100), but there is a real diff to show.
+    shared = ["the", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog"] * 3
+    tokens_a = make_paragraph_tokens([shared + ["one"]])
+    tokens_b = make_paragraph_tokens([shared + ["two"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+    assert result.overlays, "test setup invalid: expected at least one overlay"
+    assert result.similarity <= 0.99, (
+        f"similarity must be capped at 0.99 when overlays exist, "
+        f"got {result.similarity}"
+    )
+    # And the displayed (rounded) percent must therefore be < 100.
+    assert round(result.similarity * 100) < 100
+
+
+def test_similarity_uncapped_when_no_overlays():
+    """No overlays = nothing changed = honest 1.0 is allowed."""
+    tokens_a = make_paragraph_tokens([["one", "two", "three"]])
+    tokens_b = make_paragraph_tokens([["one", "two", "three"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="auto")
+    assert result.overlays == []
+    assert result.similarity == pytest.approx(1.0)
+
+
+# ------ layout-blindness regressions (page-break / reflow) ------
+
+
+def _stream_tokens(
+    lines: list[tuple[int, list[str]]], line_h: float = 12.0
+) -> list[Token]:
+    """Build tokens where each tuple is (page_number, words_on_that_line).
+
+    Lines on the same page advance y by `line_h`. Crossing to a new page
+    resets y. Lets us simulate identical content laid out differently --
+    e.g. all on one page on side B, but split across two pages on side A.
+    """
+    out: list[Token] = []
+    idx = 0
+    last_page: int | None = None
+    y = 10.0
+    for page, words in lines:
+        if page != last_page:
+            y = 10.0
+            last_page = page
+        x = 10.0
+        for w in words:
+            out.append(
+                Token(
+                    page=page,
+                    bbox=BBox(x0=x, y0=y, x1=x + 6 * len(w), y1=y + line_h - 2),
+                    text=w,
+                    index=idx,
+                )
+            )
+            x += 6 * len(w) + 4
+            idx += 1
+        y += line_h
+    return out
+
+
+def test_compute_diff_page_break_same_content_no_overlays():
+    """Regression: identical content laid out across different page breaks
+    must NOT produce any add/remove flags. Earlier block-level alignment
+    flagged the post-break tail of A as 'removed' because Hungarian could
+    only pair one of A's two lines with B's single line.
+    """
+    # Side A: text split across a page break (same words, just wrapped).
+    tokens_a = _stream_tokens([
+        (1, ["The", "quick", "brown", "fox", "jumps"]),
+        (2, ["over", "the", "lazy", "dog"]),
+    ])
+    # Side B: same words, all on page 1, broken into two visual lines.
+    tokens_b = _stream_tokens([
+        (1, ["The", "quick", "brown", "fox", "jumps"]),
+        (1, ["over", "the", "lazy", "dog"]),
+    ])
+    result = compute_diff(tokens_a, tokens_b, 2, 1, mode="git-style")
+    assert result.overlays == [], (
+        f"identical content across different page layouts must produce no "
+        f"diffs; got {len(result.overlays)} overlays: "
+        f"{[(o.side, o.kind.value) for o in result.overlays]}"
+    )
+
+
+def test_compute_diff_line_wrap_difference_no_overlays():
+    """Same paragraph, different line wrapping -- must not produce false diffs."""
+    # Side A: wrapped at 5 words.
+    tokens_a = _stream_tokens([
+        (1, ["alpha", "beta", "gamma", "delta", "epsilon"]),
+        (1, ["zeta", "eta", "theta"]),
+    ])
+    # Side B: same words on a single line.
+    tokens_b = _stream_tokens([
+        (1, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]),
+    ])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+    assert result.overlays == [], (
+        f"identical content with different line-wrapping must produce no "
+        f"diffs; got {[(o.side, o.kind.value) for o in result.overlays]}"
+    )
+
+
+def test_compute_diff_page_break_with_a_real_change_only_change_flagged():
+    """Across-page reflow plus one real edit: only the real edit is flagged."""
+    tokens_a = _stream_tokens([
+        (1, ["The", "quick", "brown", "fox", "jumps"]),
+        (2, ["over", "the", "lazy", "dog"]),
+    ])
+    tokens_b = _stream_tokens([
+        (1, ["The", "quick", "brown", "fox", "jumps", "over", "the", "sleeping", "dog"]),
+    ])
+    result = compute_diff(tokens_a, tokens_b, 2, 1, mode="git-style")
+    # The single word "lazy" -> "sleeping" should be the only flagged change.
+    a_overlays = [o for o in result.overlays if o.side == "A"]
+    b_overlays = [o for o in result.overlays if o.side == "B"]
+    assert a_overlays, "expected the one real change to be flagged on A"
+    assert b_overlays, "expected the one real change to be flagged on B"
+    # The flagged A text should be just "lazy" (and similarly "sleeping" on B).
+    a_texts = [s.text_a for s in result.summary if s.text_a]
+    b_texts = [s.text_b for s in result.summary if s.text_b]
+    assert any("lazy" in t for t in a_texts), f"A flagged text: {a_texts}"
+    assert any("sleeping" in t for t in b_texts), f"B flagged text: {b_texts}"

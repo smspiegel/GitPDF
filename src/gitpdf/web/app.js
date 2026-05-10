@@ -166,14 +166,18 @@ function gotoDiff(idx) {
   document.querySelectorAll(".overlay.focused").forEach(el => el.classList.remove("focused"));
   document.querySelectorAll("#summary-list li.focused").forEach(el => el.classList.remove("focused"));
   let firstScrollTarget = null;
-  for (const o of state.overlays) {
-    if (o.diff_id !== diffId) continue;
-    const pageRec = state.pages[o.side][o.page - 1];
-    if (!pageRec) continue;
-    const el = pageRec.layerEl.querySelector(`[data-diff-id="${diffId}"]`);
-    if (el) {
-      el.classList.add("focused");
-      if (!firstScrollTarget) firstScrollTarget = { side: o.side, el };
+  // A multi-line diff has one overlay rectangle per visual line, all sharing
+  // the same data-diff-id. We must mark *every* matching rect, not just the
+  // first one -- otherwise only the top line of a multi-line block is
+  // outlined in blue and the user can't see what else belongs to the diff.
+  const selector = `[data-diff-id="${diffId}"]`;
+  for (const side of ["A", "B"]) {
+    for (const pageRec of state.pages[side]) {
+      const matches = pageRec.layerEl.querySelectorAll(selector);
+      for (const el of matches) {
+        el.classList.add("focused");
+        if (!firstScrollTarget) firstScrollTarget = { side, el };
+      }
     }
   }
   if (firstScrollTarget) {
