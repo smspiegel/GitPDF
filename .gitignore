@@ -10,5 +10,6 @@ dist/
 .env
 ignore.md
 PLANNED_UPDATES.md
+LOCAL_NOTES.md
 *.pdf
 data*
