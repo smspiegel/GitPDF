@@ -183,3 +183,85 @@ def test_compute_diff_diff_only_mode_collapses_kinds():
     assert DiffKind.REMOVED not in kinds
     assert DiffKind.ADDED not in kinds
     assert kinds == {DiffKind.MOVED}
+
+
+# ------ per-line segmentation regression (resume/dense-spacing case) ------
+
+
+def make_lines_tokens(
+    lines: list[list[str]], page: int = 1, line_h: float = 12.0
+) -> list[Token]:
+    """Lay out one row of words per line with TIGHT spacing (no paragraph gap).
+
+    This mirrors a resume or single-column report where every line is just
+    one line-height apart from the next -- the layout that used to collapse
+    into a single block under the old paragraph-gap heuristic.
+    """
+    out: list[Token] = []
+    idx = 0
+    y = 10.0
+    for row in lines:
+        x = 10.0
+        for w in row:
+            out.append(
+                Token(
+                    page=page,
+                    bbox=BBox(x0=x, y0=y, x1=x + 6 * len(w), y1=y + line_h - 2),
+                    text=w,
+                    index=idx,
+                )
+            )
+            x += 6 * len(w) + 4
+            idx += 1
+        y += line_h  # tight: one line height between rows
+    return out
+
+
+def test_segment_one_block_per_visual_line_under_tight_spacing():
+    # Five tightly-spaced lines must NOT collapse into one block.
+    tokens = make_lines_tokens(
+        [
+            ["SPENCER", "SPIEGELMAN"],
+            ["email|phone|loc"],
+            ["SUMMARY", "OF", "QUALIFICATIONS"],
+            ["Four", "years", "of", "experience"],
+            ["Languages:", "Python"],
+        ]
+    )
+    blocks = segment_blocks(tokens)
+    assert len(blocks) == 5, f"expected per-line segmentation, got {len(blocks)} blocks"
+    assert blocks[0].text == "SPENCER SPIEGELMAN"
+    assert blocks[2].text == "SUMMARY OF QUALIFICATIONS"
+
+
+def test_segment_groups_same_line_words_into_one_block():
+    # All words on the same y are one block; a y advance starts a new one.
+    tokens = make_lines_tokens([["alpha", "beta", "gamma"], ["delta"]])
+    blocks = segment_blocks(tokens)
+    assert len(blocks) == 2
+    assert blocks[0].text == "alpha beta gamma"
+    assert blocks[1].text == "delta"
+
+
+def test_compute_diff_resume_like_only_changed_lines_highlighted():
+    """The bug from the original report: near-identical resumes used to flag
+    every line as added/removed because everything collapsed to one block.
+    With per-line segmentation, only the diverging lines should be flagged.
+    """
+    shared = [
+        ["SPENCER", "SPIEGELMAN"],
+        ["SUMMARY", "OF", "QUALIFICATIONS"],
+        ["Four", "years", "of", "experience"],
+        ["EDUCATION"],
+        ["University", "of", "Waterloo"],
+    ]
+    tokens_a = make_lines_tokens(shared)
+    tokens_b = make_lines_tokens(shared + [["Dear", "Hitachi", "Energy", "Research", "Team"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+    # Only the new line on B should produce overlays; nothing on A.
+    sides = {o.side for o in result.overlays}
+    assert sides == {"B"}, f"unchanged lines should not be flagged, got sides={sides}"
+    added_text = " ".join(
+        o.kind.value for o in result.overlays if o.side == "B"
+    )
+    assert "added" in added_text

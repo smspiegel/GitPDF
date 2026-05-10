@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -24,12 +24,19 @@ from .extract import extract_document
 from .models import DiffResult, ExtractedDoc, Mode
 from .paths import sessions_dir, web_dir
 
-# Window-close detection: the page heartbeats periodically. If no ping
-# arrives for HEARTBEAT_TIMEOUT seconds we treat the window as closed.
-# STARTUP_GRACE gives the user time to actually open the browser tab
-# before we declare nobody connected.
-HEARTBEAT_TIMEOUT = 10.0
+# Window-close detection: the page holds a WebSocket open. We shut down
+# when no sockets are connected. Polling timers (setInterval) get throttled
+# in backgrounded Chrome tabs -- often to once per minute -- which used to
+# kill the server while the user was on another tab. WebSockets are not
+# subject to that throttling and the OS tears the socket down immediately
+# when the tab actually closes.
+#
+# STARTUP_GRACE: time to allow first connection after launch.
+# DISCONNECT_GRACE: small buffer after last disconnect, so a tab refresh
+# (which momentarily drops to zero connections) doesn't shut us down.
 STARTUP_GRACE = 60.0
+DISCONNECT_GRACE = 5.0
+WATCHDOG_INTERVAL = 2.0
 
 
 def _sweep_stale_sessions() -> None:
@@ -68,7 +75,11 @@ def create_app(shutdown_event: threading.Event | None = None) -> FastAPI:
     app.state.session = state
 
     startup_time = time.monotonic()
-    last_heartbeat: dict[str, float | None] = {"t": None}
+    conn_state: dict[str, object] = {
+        "count": 0,           # currently open keepalive sockets
+        "ever_connected": False,
+        "last_zero_at": None,  # monotonic time count last dropped to 0
+    }
 
     def _signal_shutdown() -> None:
         if shutdown_event is not None:
@@ -82,25 +93,41 @@ def create_app(shutdown_event: threading.Event | None = None) -> FastAPI:
     async def _start_watchdog() -> None:
         async def watchdog() -> None:
             while True:
-                await asyncio.sleep(3)
+                await asyncio.sleep(WATCHDOG_INTERVAL)
                 now = time.monotonic()
-                last = last_heartbeat["t"]
-                if last is None:
+                if not conn_state["ever_connected"]:
                     # Nobody has connected yet. Exit if the user never
                     # opened the page within the grace window.
                     if now - startup_time > STARTUP_GRACE:
                         _signal_shutdown()
                         return
-                elif now - last > HEARTBEAT_TIMEOUT:
-                    # Page was open and is now gone -- user closed the tab.
-                    _signal_shutdown()
-                    return
+                elif conn_state["count"] == 0:
+                    last_zero = conn_state["last_zero_at"]
+                    if last_zero is not None and now - last_zero > DISCONNECT_GRACE:
+                        # All tabs gone for long enough that a refresh
+                        # would have reconnected by now.
+                        _signal_shutdown()
+                        return
         asyncio.create_task(watchdog())
 
-    @app.post("/api/heartbeat")
-    def heartbeat() -> dict[str, bool]:
-        last_heartbeat["t"] = time.monotonic()
-        return {"ok": True}
+    @app.websocket("/ws/keepalive")
+    async def keepalive(ws: WebSocket) -> None:
+        await ws.accept()
+        conn_state["count"] = int(conn_state["count"]) + 1  # type: ignore[arg-type]
+        conn_state["ever_connected"] = True
+        conn_state["last_zero_at"] = None
+        try:
+            # Hold the socket open. We don't expect any messages -- if the
+            # tab is alive, the TCP connection is alive. We only receive
+            # so we notice client-initiated close immediately.
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            conn_state["count"] = int(conn_state["count"]) - 1  # type: ignore[arg-type]
+            if conn_state["count"] == 0:
+                conn_state["last_zero_at"] = time.monotonic()
 
     @app.post("/api/shutdown")
     def shutdown_now() -> dict[str, bool]:

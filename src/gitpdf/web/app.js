@@ -253,21 +253,49 @@ $("next").disabled = true;
 setupSyncScroll();
 setStatus("Open two PDFs to begin.");
 
-// -------- Heartbeat / window-close detection --------
-// The server tracks the most recent ping. If pings stop (tab closed,
-// browser quit, machine slept), the server shuts itself down so the
-// background gitpdf.exe process doesn't linger.
-const HEARTBEAT_MS = 3000;
-function sendHeartbeat() {
-  fetch("/api/heartbeat", { method: "POST", keepalive: true }).catch(() => {});
+// -------- Window-close detection (WebSocket keepalive) --------
+// A persistent WebSocket replaces the old polling heartbeat. Browsers
+// throttle setInterval in backgrounded tabs (Chrome: down to once/min),
+// which used to break the old 3s heartbeat and kill the server while the
+// user was on another tab. WebSocket connections are not throttled --
+// they stay open in background tabs, and the OS closes them as soon as
+// the tab is actually closed, so the server detects window-close in
+// constant time without any polling.
+let keepaliveSocket = null;
+let keepaliveClosedIntentionally = false;
+function openKeepalive() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws/keepalive`;
+  try {
+    keepaliveSocket = new WebSocket(url);
+  } catch {
+    scheduleKeepaliveReconnect();
+    return;
+  }
+  keepaliveSocket.addEventListener("close", () => {
+    keepaliveSocket = null;
+    if (!keepaliveClosedIntentionally) scheduleKeepaliveReconnect();
+  });
+  keepaliveSocket.addEventListener("error", () => {
+    // close handler will fire next and trigger reconnect.
+  });
 }
-sendHeartbeat();
-setInterval(sendHeartbeat, HEARTBEAT_MS);
+function scheduleKeepaliveReconnect() {
+  // Server may have shut down or the network blipped. Retry quietly --
+  // if the server is truly gone we'll just keep failing harmlessly.
+  setTimeout(openKeepalive, 1500);
+}
+openKeepalive();
 
 // Best-effort immediate-shutdown signal when the page actually unloads
-// (not on bfcache navigation, where the page might come back).
+// (not on bfcache navigation, where the page might come back). The
+// WebSocket close also signals the server, but this lets us close cleanly.
 window.addEventListener("pagehide", (e) => {
   if (e.persisted) return;
+  keepaliveClosedIntentionally = true;
+  if (keepaliveSocket) {
+    try { keepaliveSocket.close(); } catch {}
+  }
   if (navigator.sendBeacon) {
     navigator.sendBeacon("/api/shutdown");
   } else {

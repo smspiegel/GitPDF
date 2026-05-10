@@ -37,6 +37,18 @@ if (-not (Test-Path $pdfjs)) {
     if ($LASTEXITCODE -ne 0) { throw "fetch_pdfjs.py failed" }
 }
 
+# Quality gate: run the test suite before producing a binary. A red build
+# here is intentional -- shipping an exe whose tests don't pass would just
+# push the failure downstream. Set $env:GITPDF_SKIP_TESTS = '1' to bypass
+# locally (CI must never set that).
+if ($env:GITPDF_SKIP_TESTS -eq '1') {
+    Write-Host "==> Skipping tests (GITPDF_SKIP_TESTS=1)" -ForegroundColor Yellow
+} else {
+    Write-Host "==> Running test suite..." -ForegroundColor Cyan
+    & $venvPython -m pytest tests
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed -- aborting build." }
+}
+
 Write-Host "==> Cleaning previous build..." -ForegroundColor Cyan
 
 # A running gitpdf(-console).exe from a previous test will hold files in

@@ -13,7 +13,7 @@ import difflib
 from dataclasses import dataclass
 
 import numpy as np
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 from scipy.optimize import linear_sum_assignment
 
 from .models import (
@@ -29,7 +29,7 @@ from .models import (
 
 
 GIT_STYLE_THRESHOLD = 0.70
-PARAGRAPH_GAP_FACTOR = 1.6  # vertical gap > median line height * this -> new block
+LINE_TOLERANCE_FACTOR = 0.6  # tokens within median_h * this share a visual line
 MIN_BLOCK_CHARS = 2
 CONTEXT_WORDS = 12  # words on each side of a diff span included in summary context
 
@@ -37,7 +37,15 @@ CONTEXT_WORDS = 12  # words on each side of a diff span included in summary cont
 # -------- block segmentation --------
 
 def segment_blocks(tokens: list[Token]) -> list[Block]:
-    """Group tokens into paragraph-like blocks using a vertical-gap heuristic."""
+    """One block per visual line.
+
+    Paragraph-level grouping was too coarse: PDFs with uniform line spacing
+    (resumes, single-column reports) collapsed into one giant block per page,
+    so any meaningful divergence dropped the pair below the alignment cutoff
+    and flagged the entire document as added/removed. Per-line blocks let
+    the Hungarian step match line-by-line and word-level diff handles the
+    intra-line edits.
+    """
     if not tokens:
         return []
 
@@ -68,19 +76,19 @@ def segment_blocks(tokens: list[Token]) -> list[Block]:
 
     line_heights = [t.bbox.height for t in tokens if t.bbox.height > 0]
     median_h = float(np.median(line_heights)) if line_heights else 12.0
-    gap_threshold = median_h * PARAGRAPH_GAP_FACTOR
+    line_tolerance = median_h * LINE_TOLERANCE_FACTOR
 
-    prev: Token | None = None
+    prev_page: int | None = None
+    prev_y_mid: float | None = None
     for t in tokens:
-        if prev is not None:
-            page_change = t.page != prev.page
-            # Tokens are in reading order; a "new line" begins when y advances.
-            # Use vertical gap between bottoms; negative/zero means same line.
-            vgap = t.bbox.y0 - prev.bbox.y1
-            if page_change or vgap > gap_threshold:
-                flush()
+        y_mid = (t.bbox.y0 + t.bbox.y1) / 2.0
+        if prev_page is not None and (
+            t.page != prev_page or abs(y_mid - prev_y_mid) > line_tolerance
+        ):
+            flush()
         current.append(t)
-        prev = t
+        prev_page = t.page
+        prev_y_mid = y_mid
     flush()
     return blocks
 
@@ -134,10 +142,14 @@ def align_blocks(
         return [Pair(a=i, b=None, similarity=0.0) for i, _ in enumerate(blocks_a)]
 
     n_a, n_b = len(blocks_a), len(blocks_b)
-    sim = np.zeros((n_a, n_b), dtype=float)
-    for i, ba in enumerate(blocks_a):
-        for j, bb in enumerate(blocks_b):
-            sim[i, j] = fuzz.token_set_ratio(ba.text, bb.text) / 100.0
+    sim = np.asarray(
+        process.cdist(
+            [b.text for b in blocks_a],
+            [b.text for b in blocks_b],
+            scorer=fuzz.token_set_ratio,
+        ),
+        dtype=float,
+    ) / 100.0
 
     # Hungarian on a square matrix; pad with zero-similarity dummies.
     n = max(n_a, n_b)
