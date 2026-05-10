@@ -9,5 +9,6 @@ dist/
 *.swp
 .env
 ignore.md
+PLANNED_UPDATES.md
 *.pdf
 data*

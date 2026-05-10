@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 
@@ -70,10 +71,7 @@ class _SessionState:
 
 
 def create_app(shutdown_event: threading.Event | None = None) -> FastAPI:
-    app = FastAPI(title="gitpdf", docs_url=None, redoc_url=None)
     state = _SessionState()
-    app.state.session = state
-
     startup_time = time.monotonic()
     conn_state: dict[str, object] = {
         "count": 0,           # currently open keepalive sockets
@@ -85,30 +83,43 @@ def create_app(shutdown_event: threading.Event | None = None) -> FastAPI:
         if shutdown_event is not None:
             shutdown_event.set()
 
-    @app.on_event("shutdown")
-    def _on_shutdown() -> None:
-        state.cleanup()
+    async def _watchdog() -> None:
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL)
+            now = time.monotonic()
+            if not conn_state["ever_connected"]:
+                # Nobody has connected yet. Exit if the user never
+                # opened the page within the grace window.
+                if now - startup_time > STARTUP_GRACE:
+                    _signal_shutdown()
+                    return
+            elif conn_state["count"] == 0:
+                last_zero = conn_state["last_zero_at"]
+                if last_zero is not None and now - last_zero > DISCONNECT_GRACE:
+                    # All tabs gone for long enough that a refresh
+                    # would have reconnected by now.
+                    _signal_shutdown()
+                    return
 
-    @app.on_event("startup")
-    async def _start_watchdog() -> None:
-        async def watchdog() -> None:
-            while True:
-                await asyncio.sleep(WATCHDOG_INTERVAL)
-                now = time.monotonic()
-                if not conn_state["ever_connected"]:
-                    # Nobody has connected yet. Exit if the user never
-                    # opened the page within the grace window.
-                    if now - startup_time > STARTUP_GRACE:
-                        _signal_shutdown()
-                        return
-                elif conn_state["count"] == 0:
-                    last_zero = conn_state["last_zero_at"]
-                    if last_zero is not None and now - last_zero > DISCONNECT_GRACE:
-                        # All tabs gone for long enough that a refresh
-                        # would have reconnected by now.
-                        _signal_shutdown()
-                        return
-        asyncio.create_task(watchdog())
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Startup: kick off the connection-count watchdog.
+        watchdog_task = asyncio.create_task(_watchdog())
+        try:
+            yield
+        finally:
+            # Shutdown: cancel watchdog (no-op if already returned) and
+            # wipe the per-session temp dir. atexit also covers this for
+            # hard exits, but the lifespan handler runs on clean exits.
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            state.cleanup()
+
+    app = FastAPI(title="gitpdf", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.state.session = state
 
     @app.websocket("/ws/keepalive")
     async def keepalive(ws: WebSocket) -> None:
