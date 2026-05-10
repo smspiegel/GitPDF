@@ -183,11 +183,16 @@ function gotoDiff(idx) {
   if (firstScrollTarget) {
     firstScrollTarget.el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
-  const li = document.querySelector(`#summary-list li[data-diff-id="${diffId}"]`);
-  if (li) {
+  // A `replace` opcode emits two summary rows (REMOVED + ADDED) sharing
+  // one diff_id, so multiple <li>s can match. Highlight all of them and
+  // scroll the first into view.
+  const lis = document.querySelectorAll(`#summary-list li[data-diff-id="${diffId}"]`);
+  let firstLi = null;
+  for (const li of lis) {
     li.classList.add("focused");
-    li.scrollIntoView({ block: "nearest" });
+    if (!firstLi) firstLi = li;
   }
+  if (firstLi) firstLi.scrollIntoView({ block: "nearest" });
 }
 
 // -------- Summary panel --------
@@ -201,15 +206,35 @@ function renderSummary(entries, modeUsed, similarity) {
     const kind = document.createElement("span");
     kind.className = "kind";
     kind.textContent = e.kind;
-    const snippet = document.createElement("span");
-    snippet.className = "snippet";
-    snippet.textContent = (e.text_a || e.text_b || "").slice(0, 100);
+
+    // REPLACED rows show before|after side-by-side: red half on the left
+    // with the deleted text, green half on the right with the inserted
+    // text. Other kinds get the usual single-snippet treatment.
+    let body;
+    if (e.kind === "replaced") {
+      body = document.createElement("div");
+      body.className = "snippet-split";
+      const left = document.createElement("span");
+      left.className = "snippet-half removed";
+      left.textContent = (e.text_a || "").slice(0, 80);
+      left.title = e.text_a || "";
+      const right = document.createElement("span");
+      right.className = "snippet-half added";
+      right.textContent = (e.text_b || "").slice(0, 80);
+      right.title = e.text_b || "";
+      body.append(left, right);
+    } else {
+      body = document.createElement("span");
+      body.className = "snippet";
+      body.textContent = (e.text_a || e.text_b || "").slice(0, 100);
+    }
+
     const pageref = document.createElement("div");
     pageref.className = "pageref";
     const a = e.page_a != null ? `A p.${e.page_a}` : "";
     const b = e.page_b != null ? `B p.${e.page_b}` : "";
     pageref.textContent = [a, b].filter(Boolean).join("  ·  ");
-    li.append(kind, snippet, pageref);
+    li.append(kind, body, pageref);
     li.addEventListener("click", () => focusDiffId(e.diff_id));
     list.append(li);
   }

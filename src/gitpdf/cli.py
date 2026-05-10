@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .diff_engine import compute_diff
 from .extract import extract_document
-from .models import DiffResult, Mode
+from .models import DiffResult
 from .paths import exports_dir
 
 
@@ -72,7 +72,7 @@ def _run_gui() -> int:
 
     url = f"http://127.0.0.1:{port}"
     try:
-        import webview  # pywebview, optional
+        import webview  # type: ignore # pywebview, optional
     except ImportError:
         # No native window available -- open the user's default browser so
         # double-clicking the exe behaves like launching any other app.

@@ -46,6 +46,11 @@ class DiffKind(str, Enum):
     ADDED = "added"
     MOVED = "moved"
     EQUAL = "equal"
+    # REPLACED is a summary-only kind. Document overlays for a replacement
+    # remain split (REMOVED on A, ADDED on B); only the summary row carries
+    # this kind, signalling the frontend to render a horizontally-split
+    # red/green snippet showing the before/after text together.
+    REPLACED = "replaced"
 
 
 class Overlay(BaseModel):

@@ -32,10 +32,28 @@ def extract_document(pdf_path: str | Path, ocr_dpi: int = 300) -> ExtractedDoc:
         page_count = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, start=1):
             page_sizes.append((float(page.width), float(page.height)))
+            # Two settings worth explaining:
+            #
+            # 1. `use_text_flow` is left at the default (False). Setting it
+            #    True honors the PDF's internal text-stream verbatim, which
+            #    for PDFs whose text streams omit space characters and rely
+            #    on glyph positioning for visual spacing (some LaTeX/Word/
+            #    Office exporters do this) produces one giant run-on token
+            #    per line. The default uses spatial inference instead.
+            #
+            # 2. `x_tolerance` is dropped from the default 3.0 to 1.5. PDFs
+            #    that don't emit space chars typically draw words ~2.5-3.0
+            #    PDF points apart (right at the default threshold), so the
+            #    inter-word gaps get rounded down into "same word." Real
+            #    intra-word kerning is < 0.2 pt, so 1.5 is comfortably
+            #    above kerning noise and well below any reasonable visual
+            #    word boundary. PDFs that DO emit space chars are
+            #    unaffected because the space glyph itself creates a gap
+            #    much larger than 1.5.
             words = page.extract_words(
-                use_text_flow=True,
                 extra_attrs=[],
                 keep_blank_chars=False,
+                x_tolerance=1.5,
             )
             if len(words) >= TEXT_LAYER_MIN_WORDS:
                 used_ocr.append(False)

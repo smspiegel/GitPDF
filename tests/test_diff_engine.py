@@ -114,6 +114,62 @@ def test_compute_diff_word_replacement():
     assert DiffKind.ADDED in kinds
 
 
+def test_compute_diff_replace_emits_single_replaced_row():
+    """A `replace` opcode must produce ONE summary entry with kind=REPLACED
+    that carries both the before (text_a) and after (text_b) text.
+
+    The frontend renders this kind as a horizontally-split row: the red
+    half on the left shows text_a (what was deleted), the green half on
+    the right shows text_b (what replaced it). Earlier code emitted only
+    REMOVED for replaces, so the green side was invisible in the panel.
+    """
+    tokens_a = make_paragraph_tokens([["the", "quick", "brown", "fox"]])
+    tokens_b = make_paragraph_tokens([["the", "slow", "brown", "fox"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+
+    replaced = [s for s in result.summary if s.kind == DiffKind.REPLACED]
+    assert len(replaced) == 1, f"expected 1 REPLACED row, got {result.summary}"
+    assert not [s for s in result.summary if s.kind == DiffKind.REMOVED]
+    assert not [s for s in result.summary if s.kind == DiffKind.ADDED]
+    # Both sides populated so the frontend can render the split snippet.
+    assert replaced[0].text_a == "quick"
+    assert replaced[0].text_b == "slow"
+
+
+def test_compute_diff_replace_in_diff_only_mode_collapses_to_moved():
+    """In diff-only mode there's no red/green distinction, so a REPLACED
+    summary row collapses to MOVED (the neutral marker)."""
+    tokens_a = make_paragraph_tokens([["the", "quick", "brown", "fox"]])
+    tokens_b = make_paragraph_tokens([["the", "slow", "brown", "fox"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="diff-only")
+    kinds = {s.kind for s in result.summary}
+    assert DiffKind.REPLACED not in kinds
+    assert kinds == {DiffKind.MOVED}
+
+
+def test_compute_diff_pure_delete_one_removed_row():
+    """A pure delete (no insert at the same position) yields exactly one
+    REMOVED summary row with no ADDED partner."""
+    tokens_a = make_paragraph_tokens([["alpha", "beta", "gamma"]])
+    tokens_b = make_paragraph_tokens([["alpha", "gamma"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+    removed = [s for s in result.summary if s.kind == DiffKind.REMOVED]
+    added = [s for s in result.summary if s.kind == DiffKind.ADDED]
+    assert len(removed) == 1 and len(added) == 0
+    assert removed[0].text_a == "beta"
+
+
+def test_compute_diff_pure_insert_one_added_row():
+    """A pure insert yields exactly one ADDED summary row, no REMOVED."""
+    tokens_a = make_paragraph_tokens([["alpha", "gamma"]])
+    tokens_b = make_paragraph_tokens([["alpha", "beta", "gamma"]])
+    result = compute_diff(tokens_a, tokens_b, 1, 1, mode="git-style")
+    removed = [s for s in result.summary if s.kind == DiffKind.REMOVED]
+    added = [s for s in result.summary if s.kind == DiffKind.ADDED]
+    assert len(removed) == 0 and len(added) == 1
+    assert added[0].text_b == "beta"
+
+
 def test_compute_diff_reorder_emits_moved():
     tokens_a = make_paragraph_tokens(
         [["alpha", "alpha", "alpha"], ["beta", "beta", "beta"]]
