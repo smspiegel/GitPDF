@@ -275,7 +275,7 @@ def compute_diff(
 
     overlays: list[Overlay] = []
     summary: list[SummaryEntry] = []
-    summary_emitted: set[int] = set()  # one summary entry per diff_id
+    move_pair_emitted: set[int] = set()  # dedup the second visit of a move pair
 
     for op_idx, (tag, i1, i2, j1, j2) in enumerate(opcodes):
         if tag == "equal":
@@ -302,50 +302,82 @@ def compute_diff(
                 Overlay(diff_id=did, side="B", page=page, bbox=rect, kind=b_kind)
             )
 
-        # Summary: emit once per diff_id. For a move pair, fold both sides
-        # together so the user sees the from/to context in a single row.
-        if did in summary_emitted:
-            continue
-        summary_emitted.add(did)
-
-        text_a = " ".join(a_words[i1:i2])[:200] if a_indices else ""
-        text_b = " ".join(b_words[j1:j2])[:200] if b_indices else ""
-        page_a = tokens_a[i1].page if a_indices else None
-        page_b = tokens_b[j1].page if b_indices else None
-        context_a = _context_around(tokens_a, a_indices) if a_indices else ""
-        context_b = _context_around(tokens_b, b_indices) if b_indices else ""
-
+        # ---- summary entry ----
+        # One row per change. Kind drives how the frontend renders the row:
+        #   * pure delete -> REMOVED (red row, text_a only)
+        #   * pure insert -> ADDED   (green row, text_b only)
+        #   * replace     -> REPLACED (split row: red text_a | green text_b)
+        #   * move pair   -> MOVED  (yellow row, both sides; one entry per pair)
+        # In diff-only mode every change collapses to MOVED (single colour).
         if is_moved:
+            if did in move_pair_emitted:
+                continue
+            move_pair_emitted.add(did)
             partner_idx = moved_partners[op_idx]
             ptag, pi1, pi2, pj1, pj2 = opcodes[partner_idx]
-            if ptag == "delete" and not text_a:
-                p_indices = list(range(pi1, pi2))
-                text_a = " ".join(a_words[pi1:pi2])[:200]
-                page_a = tokens_a[pi1].page
-                context_a = _context_around(tokens_a, p_indices)
-            elif ptag == "insert" and not text_b:
-                p_indices = list(range(pj1, pj2))
-                text_b = " ".join(b_words[pj1:pj2])[:200]
-                page_b = tokens_b[pj1].page
-                context_b = _context_around(tokens_b, p_indices)
-
-        summary_kind = DiffKind.MOVED if (is_moved or chosen != "git-style") else (
-            DiffKind.REMOVED if a_indices and not b_indices
-            else DiffKind.ADDED if b_indices and not a_indices
-            else DiffKind.REMOVED  # `replace`: report the A side as the headline kind
-        )
-        summary.append(
-            SummaryEntry(
-                diff_id=did,
-                kind=summary_kind,
-                page_a=page_a,
-                page_b=page_b,
-                text_a=text_a,
-                text_b=text_b,
-                context_a=context_a,
-                context_b=context_b,
+            if tag == "delete":
+                a_lo, a_hi, b_lo, b_hi = i1, i2, pj1, pj2
+            else:  # tag == "insert"
+                a_lo, a_hi, b_lo, b_hi = pi1, pi2, j1, j2
+            move_a = list(range(a_lo, a_hi))
+            move_b = list(range(b_lo, b_hi))
+            summary.append(
+                SummaryEntry(
+                    diff_id=did,
+                    kind=DiffKind.MOVED,
+                    page_a=tokens_a[a_lo].page,
+                    page_b=tokens_b[b_lo].page,
+                    text_a=" ".join(a_words[a_lo:a_hi])[:200],
+                    text_b=" ".join(b_words[b_lo:b_hi])[:200],
+                    context_a=_context_around(tokens_a, move_a),
+                    context_b=_context_around(tokens_b, move_b),
+                )
             )
-        )
+            continue
+
+        if a_indices and b_indices:
+            # `replace`: emit one split-row entry showing before/after.
+            summary_kind = (
+                DiffKind.REPLACED if chosen == "git-style" else DiffKind.MOVED
+            )
+            summary.append(
+                SummaryEntry(
+                    diff_id=did,
+                    kind=summary_kind,
+                    page_a=tokens_a[i1].page,
+                    page_b=tokens_b[j1].page,
+                    text_a=" ".join(a_words[i1:i2])[:200],
+                    text_b=" ".join(b_words[j1:j2])[:200],
+                    context_a=_context_around(tokens_a, a_indices),
+                    context_b=_context_around(tokens_b, b_indices),
+                )
+            )
+        elif a_indices:
+            summary.append(
+                SummaryEntry(
+                    diff_id=did,
+                    kind=a_kind,
+                    page_a=tokens_a[i1].page,
+                    page_b=None,
+                    text_a=" ".join(a_words[i1:i2])[:200],
+                    text_b="",
+                    context_a=_context_around(tokens_a, a_indices),
+                    context_b="",
+                )
+            )
+        elif b_indices:
+            summary.append(
+                SummaryEntry(
+                    diff_id=did,
+                    kind=b_kind,
+                    page_a=None,
+                    page_b=tokens_b[j1].page,
+                    text_a="",
+                    text_b=" ".join(b_words[j1:j2])[:200],
+                    context_a="",
+                    context_b=_context_around(tokens_b, b_indices),
+                )
+            )
 
     # If we found any real diff, never report a similarity that would round
     # up to "100%" in the UI -- claiming perfect similarity when overlays
